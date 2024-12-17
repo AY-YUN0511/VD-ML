@@ -1,3 +1,10 @@
+from rdkit import Chem
+from rdkit.Chem import Descriptors, AllChem
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+import multiprocessing as mp
+
 def get_molecular_descriptors(mol):
     """
     Calculate molecular descriptors for a given molecule.
@@ -6,39 +13,42 @@ def get_molecular_descriptors(mol):
     for name, func in Descriptors.descList:
         try:
             descriptors[name] = func(mol)
-        except Exception:
+        except Exception as e:
             descriptors[name] = 0.0  # Assign default value on failure
+            print(f"Descriptor calculation failed for {name}: {e}")
     return descriptors
 
 def compute_and_scale_descriptors(df, scaler=None, fit_scaler=False, missing_val=0.0):
     """
     Compute molecular descriptors and scale them.
     """
-    descriptor_list = []
-    valid_indices = []
-    skipped_indices = []
-
-    for idx, smi in df['SMILES'].items():
+    def process_smi(smi):
         mol = smiles_to_graph(smi)
         if mol is None:
-            skipped_indices.append(idx)
-            continue
+            return None
         descriptors = get_molecular_descriptors(mol)
         descriptor_values = np.array(list(descriptors.values()), dtype=float)
         descriptor_values = np.nan_to_num(descriptor_values, nan=missing_val, posinf=missing_val, neginf=missing_val)
-        descriptor_list.append(descriptor_values)
-        valid_indices.append(idx)
-
-    descriptor_names = list(descriptors.keys())
+        return descriptor_values
+    
+    with mp.Pool(processes=mp.cpu_count()) as pool:
+        descriptor_list = pool.map(process_smi, df['SMILES'])
+    
+    # Filtering
+    valid_indices = [i for i, desc in enumerate(descriptor_list) if desc is not None]
+    skipped_indices = [i for i, desc in enumerate(descriptor_list) if desc is None]
+    descriptor_list = [desc for desc in descriptor_list if desc is not None]
+    
+    descriptor_names = list(Descriptors.descList[0][0] for _ in Descriptors.descList)
     additional_features = pd.DataFrame(descriptor_list, columns=descriptor_names)
     additional_features = additional_features.clip(lower=-1e6, upper=1e6)
-
+    
     if scaler is None:
         scaler = StandardScaler()
         scaled_descriptors = scaler.fit_transform(additional_features)
     else:
         scaled_descriptors = scaler.transform(additional_features)
-
+    
     return {
         'scaled_descriptors': scaled_descriptors,
         'valid_indices': valid_indices,
@@ -51,18 +61,22 @@ def compute_ecfp_fingerprints(df):
     """
     Compute Extended-Connectivity Fingerprints (ECFP) for molecules in the DataFrame.
     """
-    ecfp_list = []
-    valid_indices = []
-    for idx, smi in df['SMILES'].items():
+    def process_smi(smi):
         mol = smiles_to_graph(smi)
         if mol is None:
-            continue
+            return None
         ecfp_bitvect = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
         ecfp_array = np.zeros((2048,), dtype=int)
         Chem.DataStructs.ConvertToNumpyArray(ecfp_bitvect, ecfp_array)
-        ecfp_list.append(ecfp_array)
-        valid_indices.append(idx)
-    ecfp_features = np.array(ecfp_list)
+        return ecfp_array
+    
+    with mp.Pool(processes=mp.cpu_count()) as pool:
+        ecfp_list = pool.map(process_smi, df['SMILES'])
+    
+    # Filtering
+    valid_indices = [i for i, ecfp in enumerate(ecfp_list) if ecfp is not None]
+    ecfp_features = np.array([ecfp for ecfp in ecfp_list if ecfp is not None])
+    
     return {
         'ecfp_features': ecfp_features,
         'valid_indices': valid_indices
