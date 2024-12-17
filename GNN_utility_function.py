@@ -1,4 +1,7 @@
-
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from torch_geometric.data import Data, DataLoader as GeoDataLoader
+import torch
 
 def smiles_to_graph(smiles):
     """
@@ -13,7 +16,7 @@ def smiles_to_graph(smiles):
         print(f"Failed to convert SMILES to Mol: {smiles}, Error: {e}")
         return None
 
-def mol_to_data(mol, target, additional_feature=None):
+def mol_to_data(mol, target=None, additional_feature=None):
     """
     Convert RDKit Mol object to PyTorch Geometric Data object.
     """
@@ -52,8 +55,10 @@ def prepare_dataloader(df, target_column, batch_size=32, shuffle=True, generator
     """
     data_list = []
     for _, row in df.iterrows():
-        mol = row['graph']
-        target = row[target_column]
+        mol = row.get('graph', None)
+        if isinstance(mol, str):
+            mol = smiles_to_graph(mol)
+        target = row[target_column] if target_column in row else None
         additional_feature = row.get('additional_feature', None)
         data = mol_to_data(mol, target, additional_feature)
         if data is not None:
