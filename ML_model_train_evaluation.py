@@ -1,5 +1,35 @@
-# Define the objective function for Optuna
-def objective(trial, model_name, X, y):
+# ml_model_train_evaluation.py
+
+import optuna
+from optuna.samplers import TPESampler
+from optuna.pruners import MedianPruner
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from collections import defaultdict
+import numpy as np
+import torch
+import torch.optim as optim
+import torch.nn as nn
+import os
+
+def get_kernel(kernel_choice, params):
+    """
+    Return the kernel based on the kernel choice.
+    """
+    if kernel_choice == "RBF":
+        from sklearn.gaussian_process.kernels import RBF
+        return RBF(length_scale=params.get("length_scale", 1.0))
+    elif kernel_choice == "Matern":
+        from sklearn.gaussian_process.kernels import Matern
+        return Matern(length_scale=params.get("length_scale", 1.0), nu=1.5)
+    elif kernel_choice.startswith("DotProduct"):
+        from sklearn.gaussian_process.kernels import DotProduct
+        sigma_0 = params.get("sigma_0", 1.0)
+        return DotProduct(sigma_0=sigma_0)
+    else:
+        raise ValueError(f"Unsupported kernel choice: {kernel_choice}")
+
+def objective(trial, model_name, X, y, model_hyperparameters):
     """
     Objective function for Optuna hyperparameter optimization.
     """
@@ -11,15 +41,7 @@ def objective(trial, model_name, X, y):
     # Handle special cases
     if model_name == "GaussianProcessRegressor":
         kernel_choice = sampled_params.pop("kernel")
-        if kernel_choice == "RBF":
-            kernel = GaussianProcessRegressor().kernel_.RBF(length_scale=sampled_params.pop("length_scale", 1.0))
-        elif kernel_choice == "Matern":
-            kernel = GaussianProcessRegressor().kernel_.Matern(length_scale=sampled_params.pop("length_scale", 1.0), nu=1.5)
-        elif kernel_choice.startswith("DotProduct"):
-            sigma_0 = sampled_params.pop("sigma_0", 1.0)
-            kernel = GaussianProcessRegressor().kernel_.DotProduct(sigma_0=sigma_0)
-        else:
-            raise ValueError(f"Unsupported kernel choice: {kernel_choice}")
+        kernel = get_kernel(kernel_choice, sampled_params)
         sampled_params['kernel'] = kernel
 
     # Initialize the model
@@ -39,8 +61,7 @@ def objective(trial, model_name, X, y):
 
     return mean_r2
 
-# Function to perform hyperparameter tuning and model training
-def tune_and_train_models(model_hyperparameters, feature_sets, y_train, y_val, n_trials=50):
+def tune_and_train_models(model_hyperparameters, feature_sets, y_train, y_val, n_trials=50, seed=42):
     """
     Tune hyperparameters using Optuna and train models.
     """
@@ -79,11 +100,11 @@ def tune_and_train_models(model_hyperparameters, feature_sets, y_train, y_val, n
 
                 # Create Optuna study
                 study = optuna.create_study(direction='maximize',
-                                            sampler=TPESampler(seed=SEED),
+                                            sampler=TPESampler(seed=seed),
                                             pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=0))
 
                 # Optimize
-                study.optimize(lambda trial: objective(trial, model_name, X_cv, y_cv),
+                study.optimize(lambda trial: objective(trial, model_name, X_cv, y_cv, model_hyperparameters),
                               n_trials=n_trials, n_jobs=1)
 
                 print(f"\nBest trial for {key}:")
@@ -96,18 +117,8 @@ def tune_and_train_models(model_hyperparameters, feature_sets, y_train, y_val, n
                 # Special handling for GaussianProcessRegressor
                 if model_name == "GaussianProcessRegressor":
                     kernel_choice = best_params.pop("kernel")
-                    if kernel_choice == "RBF":
-                        kernel = GPR_kernel = GaussianProcessRegressor().kernel_.RBF(length_scale=1.0)
-                        best_params['kernel'] = kernel
-                    elif kernel_choice == "Matern":
-                        kernel = GPR_kernel = GaussianProcessRegressor().kernel_.Matern(length_scale=1.0, nu=1.5)
-                        best_params['kernel'] = kernel
-                    elif kernel_choice.startswith("DotProduct"):
-                        sigma_0 = best_params.pop("sigma_0", 1.0)
-                        kernel = GPR_kernel = GaussianProcessRegressor().kernel_.DotProduct(sigma_0=sigma_0)
-                        best_params['kernel'] = kernel
-                    else:
-                        raise ValueError(f"Unsupported kernel choice: {kernel_choice}")
+                    kernel = get_kernel(kernel_choice, best_params)
+                    best_params['kernel'] = kernel
 
                 # Initialize the best model with best hyperparameters
                 try:
@@ -131,54 +142,3 @@ def tune_and_train_models(model_hyperparameters, feature_sets, y_train, y_val, n
                 models_test_predictions[f"{model_name}_{feature_type}"][subgroup_status] = preds_test
 
     return best_models, models_val_predictions, models_test_predictions
-
-# ==============================
-# 8. Execute Hyperparameter Tuning and Model Training
-# ==============================
-
-# Define target variables
-y_train = train_df[target].values
-y_val = val_df[target].values
-y_test = test_df[target].values
-
-# Perform hyperparameter tuning and train models
-best_models, models_val_predictions, models_test_predictions = tune_and_train_models(
-    model_hyperparameters=model_hyperparameters,
-    feature_sets=feature_sets,
-    y_train=y_train,
-    y_val=y_val,
-    n_trials=50
-)
-
-# ==============================
-# 9. Evaluation and Visualization
-# ==============================
-
-# Collect all predictions into a list for ensemble
-def collect_predictions(models_test_predictions):
-    """
-    Collect predictions from all models for ensembling.
-    """
-    predictions = defaultdict(list)
-    for model_feature, subgroups in models_test_predictions.items():
-        for subgroup, preds in subgroups.items():
-            key = f"{model_feature}_{subgroup}"
-            predictions[key].append(preds)
-    return predictions
-
-# Calculate R² and RMSE for each model
-metrics_list = []
-for model_feature, subgroups in models_test_predictions.items():
-    for subgroup, preds in subgroups.items():
-        metrics = compute_metrics(y_test, preds)
-        metrics['Model'] = model_feature
-        metrics['Category'] = subgroup
-        metrics_list.append(metrics)
-
-# Create a DataFrame for metrics
-metrics_df = pd.DataFrame(metrics_list)
-metrics_df = metrics_df[['Model', 'Category', 'R2', 'RMSE', 'MAE']]
-
-# Display metrics table
-print("\n=== Model Performance Metrics ===\n")
-print(tabulate(metrics_df, headers='keys', tablefmt='pretty', floatfmt=".4f"))
