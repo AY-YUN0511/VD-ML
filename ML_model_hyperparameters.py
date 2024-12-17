@@ -1,3 +1,10 @@
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import ElasticNet, MLPRegressor
+from sklearn.svm import SVR
+from xgboost import XGBRegressor
+from catboost import CatBoostRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+
 model_hyperparameters = {
     "GaussianProcessRegressor": {
         "model_class": GaussianProcessRegressor,
@@ -15,7 +22,7 @@ model_hyperparameters = {
         "fixed_params": {}
     },
     "MLPRegressor": {
-        "model_class": ElasticNet,  # Corrected to MLPRegressor
+        "model_class": MLPRegressor,  # Corrected to MLPRegressor
         "tunable_params": {
             "hidden_layer_sizes": lambda trial: trial.suggest_categorical(
                 "hidden_layer_sizes",
@@ -42,7 +49,7 @@ model_hyperparameters = {
         }
     },
     "XGBoost": {
-        "model_class": RandomForestRegressor,  # Corrected to XGBRegressor
+        "model_class": XGBRegressor,  # Corrected to XGBRegressor
         "tunable_params": {
             "n_estimators": lambda trial: trial.suggest_int("n_estimators", 100, 1000),
             "max_depth": lambda trial: trial.suggest_int("max_depth", 3, 20),
@@ -74,7 +81,7 @@ model_hyperparameters = {
         }
     },
     "CatBoost": {
-        "model_class": RandomForestRegressor,  # Corrected to CatBoostRegressor
+        "model_class": CatBoostRegressor,  # Corrected to CatBoostRegressor
         "tunable_params": {
             "iterations": lambda trial: trial.suggest_int("iterations", 100, 1000),
             "depth": lambda trial: trial.suggest_int("depth", 3, 10),
