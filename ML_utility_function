@@ -1,0 +1,69 @@
+def get_molecular_descriptors(mol):
+    """
+    Calculate molecular descriptors for a given molecule.
+    """
+    descriptors = {}
+    for name, func in Descriptors.descList:
+        try:
+            descriptors[name] = func(mol)
+        except Exception:
+            descriptors[name] = 0.0  # Assign default value on failure
+    return descriptors
+
+def compute_and_scale_descriptors(df, scaler=None, fit_scaler=False, missing_val=0.0):
+    """
+    Compute molecular descriptors and scale them.
+    """
+    descriptor_list = []
+    valid_indices = []
+    skipped_indices = []
+
+    for idx, smi in df['SMILES'].items():
+        mol = smiles_to_graph(smi)
+        if mol is None:
+            skipped_indices.append(idx)
+            continue
+        descriptors = get_molecular_descriptors(mol)
+        descriptor_values = np.array(list(descriptors.values()), dtype=float)
+        descriptor_values = np.nan_to_num(descriptor_values, nan=missing_val, posinf=missing_val, neginf=missing_val)
+        descriptor_list.append(descriptor_values)
+        valid_indices.append(idx)
+
+    descriptor_names = list(descriptors.keys())
+    additional_features = pd.DataFrame(descriptor_list, columns=descriptor_names)
+    additional_features = additional_features.clip(lower=-1e6, upper=1e6)
+
+    if scaler is None:
+        scaler = StandardScaler()
+        scaled_descriptors = scaler.fit_transform(additional_features)
+    else:
+        scaled_descriptors = scaler.transform(additional_features)
+
+    return {
+        'scaled_descriptors': scaled_descriptors,
+        'valid_indices': valid_indices,
+        'skipped_indices': skipped_indices,
+        'scaler': scaler,
+        'descriptor_names': descriptor_names
+    }
+
+def compute_ecfp_fingerprints(df):
+    """
+    Compute Extended-Connectivity Fingerprints (ECFP) for molecules in the DataFrame.
+    """
+    ecfp_list = []
+    valid_indices = []
+    for idx, smi in df['SMILES'].items():
+        mol = smiles_to_graph(smi)
+        if mol is None:
+            continue
+        ecfp_bitvect = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+        ecfp_array = np.zeros((2048,), dtype=int)
+        Chem.DataStructs.ConvertToNumpyArray(ecfp_bitvect, ecfp_array)
+        ecfp_list.append(ecfp_array)
+        valid_indices.append(idx)
+    ecfp_features = np.array(ecfp_list)
+    return {
+        'ecfp_features': ecfp_features,
+        'valid_indices': valid_indices
+    }
