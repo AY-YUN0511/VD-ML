@@ -8,7 +8,103 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 import os
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+def train_model(model, optimizer, criterion, train_loader, val_loader, device, num_epochs=100, patience=10):
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+    best_model_state = None
+    train_losses = []
+    val_losses = []
+
+    # Define the learning rate scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0
+        for data in train_loader:
+            data = data.to(device)
+            optimizer.zero_grad()
+            out = model(data)
+            loss = criterion(out, data.y.view(-1, 1).float())
+            loss.backward()
+
+            # Apply gradient clipping
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
+
+            optimizer.step()
+            train_loss += loss.item()
+
+        train_loss /= len(train_loader)
+        train_losses.append(train_losses)
+
+        # Validation
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for data in val_loader:
+                data = data.to(device)  # Use the device passed as a parameter
+                out = model(data)
+                if data.y is None:
+                    continue
+                loss = criterion(out, data.y.view(-1, 1).float())
+                val_loss += loss.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # Check for improvement
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            best_model_state = model.state_dict().copy()
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered")
+                break
+
+    # Load best model state
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+
+    return model
+def evaluate_model(model, loader, device, extract_attention=False):
+    """
+    Evaluate the model on a given dataset loader.
+    Returns predictions and true labels.
+    If extract_attention is True, also returns attention weights.
+    """
+    model.eval()
+    preds = []
+    labels = []
+    attention_graph = []
+    attention_desc = []
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            if extract_attention:
+                out, att_weights = model(data, return_attention_weights=True)
+                preds.append(out.cpu().numpy())
+                labels.append(data.y.cpu().numpy())
+                if att_weights:
+                    if 'graph' in att_weights:
+                        attention_graph.append(att_weights['graph'].cpu().numpy())
+                    if 'descriptor' in att_weights:
+                        attention_desc.append(att_weights['descriptor'].cpu().numpy())
+            else:
+                out = model(data)
+                preds.append(out.cpu().numpy())
+                labels.append(data.y.cpu().numpy())
+    preds = np.concatenate(preds).flatten()
+    labels = np.concatenate(labels).flatten()
+    if extract_attention:
+        return preds, labels, attention_graph, attention_desc
+    else:
+        return preds, labels
+      
 def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop_ratio_options, lr_options, weight_decay_options, 
                     train_val_df, target_column, device, SEED):
     """
