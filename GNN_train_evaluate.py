@@ -1,4 +1,16 @@
-def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop_ratio_options, lr_options, weight_decay_options):
+import optuna
+from optuna.samplers import TPESampler
+from optuna.pruners import MedianPruner
+from sklearn.model_selection import KFold
+from collections import defaultdict
+import numpy as np
+import torch
+import torch.optim as optim
+import torch.nn as nn
+import os
+
+def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop_ratio_options, lr_options, weight_decay_options, 
+                    train_val_df, target_column, device, SEED):
     """
     Define the objective function for Optuna hyperparameter optimization.
     This function performs 5-Fold CV and returns the mean R² across folds.
@@ -34,10 +46,10 @@ def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop
 
         # Prepare DataLoaders
         train_loader = prepare_dataloader(
-            train_fold_df, target_column='log_Vdss', batch_size=32, shuffle=True, generator=torch.Generator().manual_seed(SEED)
+            train_fold_df, target_column=target_column, batch_size=32, shuffle=True, generator=torch.Generator().manual_seed(SEED)
         )
         val_loader = prepare_dataloader(
-            val_fold_df, target_column='log_Vdss', batch_size=32, shuffle=False, generator=torch.Generator().manual_seed(SEED)
+            val_fold_df, target_column=target_column, batch_size=32, shuffle=False, generator=torch.Generator().manual_seed(SEED)
         )
 
         # Training Loop with Early Stopping
@@ -45,15 +57,38 @@ def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop
         patience = 10
         patience_counter = 0
         num_epochs = 100
-        for epoch in range(num_epochs):
-            train_loss = train_model(model, optimizer, criterion, train_loader, device)
-            val_loss, val_r2, _, _ = evaluate_model(model, val_loader, criterion, device)
+        best_model_state = None
 
-            # Early Stopping
+        for epoch in range(num_epochs):
+            model.train()
+            for batch in train_loader:
+                optimizer.zero_grad()
+                outputs = model(batch)
+                loss = criterion(outputs.squeeze(), batch.y)
+                loss.backward()
+                optimizer.step()
+
+            # Validation
+            model.eval()
+            val_losses = []
+            val_predictions = []
+            val_targets = []
+            with torch.no_grad():
+                for batch in val_loader:
+                    outputs = model(batch)
+                    loss = criterion(outputs.squeeze(), batch.y)
+                    val_losses.append(loss.item())
+                    val_predictions.extend(outputs.squeeze().cpu().numpy())
+                    val_targets.extend(batch.y.cpu().numpy())
+
+            # Calculate R²
+            val_r2 = r2_score(val_targets, val_predictions)
+            val_r2_scores.append(val_r2)
+
+            # Early Stopping Check
             if val_r2 > best_val_r2:
                 best_val_r2 = val_r2
                 patience_counter = 0
-                # Save the best model state
                 best_model_state = model.state_dict()
             else:
                 patience_counter += 1
@@ -71,7 +106,8 @@ def define_objective(trial, conv_type, num_layers_options, emb_dim_options, drop
     mean_val_r2 = np.mean(val_r2_scores)
     return mean_val_r2
 
-def perform_hyperparameter_tuning(conv_type, num_trials=50):
+def perform_hyperparameter_tuning(conv_type, num_trials=50, train_val_df=None, target_column='log_Vdss',
+                                  device='cpu', SEED=42):
     """
     Perform hyperparameter tuning using Optuna for a given convolution type.
     """
@@ -91,7 +127,11 @@ def perform_hyperparameter_tuning(conv_type, num_trials=50):
             emb_dim_options=emb_dim_options,
             drop_ratio_options=drop_ratio_options,
             lr_options=lr_options,
-            weight_decay_options=weight_decay_options
+            weight_decay_options=weight_decay_options,
+            train_val_df=train_val_df,
+            target_column=target_column,
+            device=device,
+            SEED=SEED
         )
 
     # Create Optuna study
@@ -105,10 +145,6 @@ def perform_hyperparameter_tuning(conv_type, num_trials=50):
     print(f"  Params: {study.best_trial.params}")
 
     return study.best_trial.params
-
-# ==============================
-# 7. Final Model Training and Evaluation
-# ==============================
 
 def train_final_model(params, conv_type):
     """
